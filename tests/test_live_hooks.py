@@ -1358,6 +1358,16 @@ def test_codex_trust_is_read_from_the_users_config(tmp_path, repo):
     assert denylist.codex_project_trusted(repo, env) is False
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
+def test_codex_trust_matches_the_lowercased_path_codex_writes_on_windows(tmp_path, repo):
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    env = {"CODEX_HOME": str(home)}
+    (home / "config.toml").write_text(f"[projects.'{str(repo).lower()}']\n"
+                                      'trust_level = "trusted"\n')
+    assert denylist.codex_project_trusted(repo, env) is True
+
+
 def test_copilot_trust_is_read_from_its_config(tmp_path, repo):
     home = tmp_path / "copilot-home"
     home.mkdir()
