@@ -863,9 +863,46 @@ def test_claude_side_calls_stay_out_of_the_persons_history_where_the_cli_allows(
     helps = {"new": "  --no-session-persistence   Disable session persistence", "old": "  -p"}
     monkeypatch.setattr(sidecall.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 0, stdout=helps[cmd[0]], stderr=""))
-    monkeypatch.setattr(sidecall, "_FLAGS", {})
+    monkeypatch.setattr(sidecall, "_HELP", {})
     assert sidecall.claude_flags("new") == ["--no-session-persistence"]
     assert sidecall.claude_flags("old") == []
+
+
+@pytest.mark.real_sidecalls
+def test_a_claude_side_call_attaches_none_of_the_persons_mcp_servers(monkeypatch):
+    """`--tools ""` leaves every MCP server attached: the side call drops them where the CLI can,
+    while the catalog probes, which need the tools, keep them."""
+    import subprocess
+    from tokeneconomizer.plugin import sidecall
+    helps = {"new": "  --no-session-persistence\n  --strict-mcp-config   Only use MCP servers "
+                    "from --mcp-config\n  --mcp-config <configs...>", "old": "  -p"}
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        if cmd[1:] == ["--help"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=helps[cmd[0]], stderr="")
+        seen.update(cmd=cmd, cwd=kw["cwd"], env=kw["env"])
+        if "--mcp-config" in cmd:
+            with open(cmd[cmd.index("--mcp-config") + 1], encoding="utf-8") as fh:
+                seen["config"] = json.load(fh)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({
+            "result": "OK", "usage": {"input_tokens": 10, "output_tokens": 1},
+            "modelUsage": {"claude-haiku-4-5": {}}}), stderr="")
+
+    monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
+    monkeypatch.setattr(sidecall, "_HELP", {})
+    assert sidecall.claude_call("Reply with exactly: OK", cli="new")[0] == "OK"
+    cmd = seen["cmd"]
+    assert "--strict-mcp-config" in cmd and seen["config"] == {"mcpServers": {}}
+    config = cmd[cmd.index("--mcp-config") + 1]
+    assert os.path.dirname(config) == seen["cwd"]
+    # `--mcp-config` takes several values: what follows its file is an option
+    assert cmd[cmd.index("--mcp-config") + 2].startswith("--")
+    assert seen["env"]["TE_SIDECALL"] == "1"
+    assert "--strict-mcp-config" not in sidecall.claude_flags("new")     # the probes' flags
+    # a Claude Code without the flags would reject them: the call goes out without
+    sidecall.claude_call("Reply with exactly: OK", cli="old")
+    assert "--strict-mcp-config" not in seen["cmd"] and "--mcp-config" not in seen["cmd"]
 
 
 def test_claude_cli_falls_back_to_the_native_install_when_not_on_path(monkeypatch, tmp_path):
