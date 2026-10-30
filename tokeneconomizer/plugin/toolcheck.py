@@ -11,6 +11,7 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -19,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import adapter as live_adapter
 from .denylist import CODEX_TOGGLES, write_json as _write_json
-from .sidecall import claude_flags
+from .sidecall import claude_cli, claude_flags
 
 
 def verify_copilot(repo_root, servers, cli="copilot"):
@@ -54,16 +55,17 @@ def verify_codex(repo_root, capabilities, cli="codex", timeout=30):
     return state or None
 
 
-def _init_tools(extra_args, cli="claude", timeout=60):
+def _init_tools(extra_args, cli=None, timeout=60):
     """Tool list from a `claude -p` session's init event; the process is killed right after it,
     before the model is asked anything."""
+    cli = cli or claude_cli()
     env = dict(os.environ, TE_SIDECALL="1")
     cmd = [cli, "-p", "Reply with OK", "--output-format", "stream-json", "--verbose",
            "--model", "haiku", "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
-    with tempfile.TemporaryDirectory(prefix="te-probe-") as cwd:
+    with tempfile.TemporaryDirectory(prefix="te-probe-", ignore_cleanup_errors=True) as cwd:
         p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, encoding="utf-8", errors="replace", env=env,
-                             cwd=cwd)
+                             cwd=cwd, start_new_session=os.name != "nt")
         tools, version = None, None
         deadline = time.time() + timeout
         try:
@@ -78,9 +80,22 @@ def _init_tools(extra_args, cli="claude", timeout=60):
                 if time.time() > deadline:
                     break
         finally:
-            p.kill()
-            p.wait()
+            _kill_tree(p)
     return tools, version
+
+
+def _kill_tree(p):
+    """Kill the probe and what it started. The MCP servers a session launches outlive a plain
+    `kill()`, and on Windows they keep the probe's temporary directory, their cwd, in use."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    p.kill()
+    p.wait()
 
 
 class _Capture(BaseHTTPRequestHandler):
@@ -189,7 +204,7 @@ def refresh_catalog(state_root, cli=None, host="claude"):
         return path, sorted(tools)
     if host != "claude":
         raise RuntimeError(f"no catalog probe for {host}")
-    tools, version = _init_tools([], cli=cli or "claude")
+    tools, version = _init_tools([], cli=cli)
     if not tools:
         raise RuntimeError("could not read the tool list from a `claude -p` init event")
     path = live_adapter.catalog_path(state_root, "claude")
@@ -198,7 +213,8 @@ def refresh_catalog(state_root, cli=None, host="claude"):
     return path, sorted(tools)
 
 
-def _prompt_tokens(extra_args, cli="claude", timeout=180):
+def _prompt_tokens(extra_args, cli=None, timeout=180):
+    cli = cli or claude_cli()
     env = dict(os.environ, TE_SIDECALL="1")
     cmd = [cli, "-p", "Reply with exactly: OK", "--output-format", "json", "--model", "haiku",
            "--max-turns", "1"] + claude_flags(cli) + list(extra_args)
@@ -253,7 +269,7 @@ def measure(tools, cli=None, host="claude"):
                 "saved_chars_per_request": size(full) - size(lean),
                 "saved_tokens_per_request_est": (size(full) - size(lean)) // 4,
                 "probe_cost_usd": 0.0}
-    cli = cli or "claude"
+    cli = cli or claude_cli()
     full, c1 = _prompt_tokens([], cli=cli)
     lean, c2 = _prompt_tokens(["--disallowed-tools", ",".join(tools)], cli=cli)
     return {"tools": list(tools), "prompt_tokens_full": full, "prompt_tokens_lean": lean,

@@ -868,6 +868,21 @@ def test_claude_side_calls_stay_out_of_the_persons_history_where_the_cli_allows(
     assert sidecall.claude_flags("old") == []
 
 
+def test_claude_cli_falls_back_to_the_native_install_when_not_on_path(monkeypatch, tmp_path):
+    import os
+    from tokeneconomizer.plugin import sidecall
+    monkeypatch.setattr(sidecall.shutil, "which", lambda name: None)
+    monkeypatch.setattr(sidecall.os.path, "expanduser",
+                        lambda p: p.replace("~", str(tmp_path), 1))
+    assert sidecall.claude_cli() == "claude"
+    exe = tmp_path / ".local" / "bin" / ("claude.exe" if os.name == "nt" else "claude")
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    assert sidecall.claude_cli() == str(exe)
+    monkeypatch.setattr(sidecall.shutil, "which", lambda name: "/opt/bin/claude")
+    assert sidecall.claude_cli() == "/opt/bin/claude"
+
+
 # `pi --print --mode json` on Pi 1.2.0 through OpenRouter, trimmed: the header, the system and
 # user messages, the reply (a thinking block, then the text), and the run's end.
 PI_JSON_RUN = [
