@@ -41,6 +41,7 @@ or the loop guard is (the judge and the nudge writer).
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -107,12 +108,26 @@ def resume(host, root=None):
         return False
 
 
+def claude_cli():
+    """The Claude Code executable to start: `claude` on PATH (with PATHEXT on Windows, so a
+    `claude.cmd` shim too), else the native installer's `~/.local/bin/claude` -- which is often
+    not on PATH, a shell reaching it through an alias or a profile function that a subprocess
+    does not see. Falls back to the bare name, so the error stays the CLI-not-found one."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    exe = os.path.expanduser(os.path.join("~", ".local", "bin",
+                                          "claude.exe" if os.name == "nt" else "claude"))
+    return exe if os.path.isfile(exe) else "claude"
+
+
 _FLAGS = {}
 
 
-def claude_flags(cli="claude"):
+def claude_flags(cli=None):
     """`--no-session-persistence` when this Claude Code has it: a side call or a measurement is
     not a session of the person's, and should not appear in their history (`claude --resume`)."""
+    cli = cli or claude_cli()
     if cli not in _FLAGS:
         try:
             help_text = subprocess.run([cli, "--help"], capture_output=True,
@@ -124,7 +139,8 @@ def claude_flags(cli="claude"):
     return list(_FLAGS[cli])
 
 
-def claude_call(prompt, model="haiku", cli="claude", timeout=TIMEOUT_S):
+def claude_call(prompt, model="haiku", cli=None, timeout=TIMEOUT_S):
+    cli = cli or claude_cli()
     cmd = [cli, "-p", "--output-format", "json", "--max-turns", "1", "--tools", "",
            "--model", model or "haiku"] + claude_flags(cli)
     with tempfile.TemporaryDirectory(prefix="te-side-") as cwd:
