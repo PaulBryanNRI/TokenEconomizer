@@ -503,12 +503,12 @@ def codex_project_trusted(repo_root, env=None):
         text = open(os.path.join(codex_home(env), "config.toml"), encoding="utf-8").read()
     except OSError:
         return None
-    want = {os.path.abspath(repo_root), os.path.realpath(repo_root)}
+    want = {os.path.normcase(p) for p in (os.path.abspath(repo_root), os.path.realpath(repo_root))}
     current = None
     for line in text.splitlines():
         m = re.match(r'^\s*\[projects\.(?:"([^"]+)"|\'([^\']+)\')\]\s*$', line)
         if m:
-            current = m.group(1) or m.group(2)
+            current = os.path.normcase(m.group(1) or m.group(2))
             continue
         if _ANY_HEADER_RE.match(line):
             current = None
