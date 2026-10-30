@@ -5,11 +5,12 @@ The mechanisms call an optimizer as `runner(prompt, model) -> (text, effective_t
 the harness's own routing. Here it goes through the host CLI the user is already signed in to,
 so no extra API key is needed and the call is billed where the session is:
 
-  * Claude Code: `claude -p --output-format json --tools "" --max-turns 1`, on `paid_model`
-    (default `haiku`). This is a deliberate departure from the experiments, which ran every
-    optimizer call on the agent's own model so overhead could not look cheaper than the arm it
-    was charged to; in a user's session the cheapest capable model is the right default, and the
-    ledger records the real cost either way.
+  * Claude Code: `claude -p --output-format json --tools "" --max-turns 1`, with none of the
+    person's MCP servers (`--strict-mcp-config` and an empty `--mcp-config`, where the CLI has
+    them), on `paid_model` (default `haiku`). This is a deliberate departure from the
+    experiments, which ran every optimizer call on the agent's own model so overhead could not
+    look cheaper than the arm it was charged to; in a user's session the cheapest capable model
+    is the right default, and the ledger records the real cost either way.
   * Codex: `codex exec --json --disable hooks --ephemeral -s read-only`. Each such call carries
     Codex's full base prompt (~25k tokens, mostly cached) on the user's plan quota, one reason
     micro-skills (whose proposer calls it) defaults off and the loop guard's judge is woken
@@ -121,29 +122,49 @@ def claude_cli():
     return exe if os.path.isfile(exe) else "claude"
 
 
-_FLAGS = {}
+_HELP = {}
+
+
+def _claude_help(cli):
+    """`claude --help`, read once per executable: which flags this Claude Code has."""
+    if cli not in _HELP:
+        try:
+            _HELP[cli] = subprocess.run([cli, "--help"], capture_output=True,
+                                        encoding="utf-8", errors="replace", timeout=30,
+                                        stdin=subprocess.DEVNULL).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            _HELP[cli] = ""
+    return _HELP[cli]
 
 
 def claude_flags(cli=None):
     """`--no-session-persistence` when this Claude Code has it: a side call or a measurement is
     not a session of the person's, and should not appear in their history (`claude --resume`)."""
     cli = cli or claude_cli()
-    if cli not in _FLAGS:
-        try:
-            help_text = subprocess.run([cli, "--help"], capture_output=True,
-                                       encoding="utf-8", errors="replace", timeout=30,
-                                       stdin=subprocess.DEVNULL).stdout
-        except (OSError, subprocess.SubprocessError):
-            help_text = ""
-        _FLAGS[cli] = ["--no-session-persistence"] if "--no-session-persistence" in help_text else []
-    return list(_FLAGS[cli])
+    return ["--no-session-persistence"] if "--no-session-persistence" in _claude_help(cli) else []
+
+
+def claude_no_mcp(cli, cwd):
+    """`--strict-mcp-config` with an empty `--mcp-config`, when this Claude Code has them: a side
+    call needs none of the person's MCP servers. `--tools ""` removes only the built-in tools,
+    ToolSearch with them, so every MCP server stayed attached and its tools were sent in full:
+    with 503 of them (31 servers, Claude Code 2.1.301) a one-line Haiku call came to ~570k
+    effective tokens, ~14k without. The empty config is a file in the call's own directory, so no
+    `claude.cmd` shim re-quotes it on Windows. Not for the catalog probes, which need the tools."""
+    if "--strict-mcp-config" not in _claude_help(cli):
+        return []
+    path = os.path.join(cwd, "mcp.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": {}}, fh)
+    return ["--strict-mcp-config", "--mcp-config", path]
 
 
 def claude_call(prompt, model="haiku", cli=None, timeout=TIMEOUT_S):
     cli = cli or claude_cli()
-    cmd = [cli, "-p", "--output-format", "json", "--max-turns", "1", "--tools", "",
-           "--model", model or "haiku"] + claude_flags(cli)
     with tempfile.TemporaryDirectory(prefix="te-side-") as cwd:
+        # `--mcp-config` takes several values, so an option follows it, never a bare argument.
+        cmd = ([cli, "-p", "--output-format", "json", "--max-turns", "1", "--tools", ""]
+               + claude_no_mcp(cli, cwd) + ["--model", model or "haiku"] + claude_flags(cli))
         out = subprocess.run(cmd, input=prompt, capture_output=True,
                              encoding="utf-8", errors="replace", timeout=timeout, env=_env(),
                              cwd=cwd)
