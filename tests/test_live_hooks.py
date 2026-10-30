@@ -807,6 +807,29 @@ def test_apply_and_restore_touch_only_the_plugins_own_rules(repo, tmp_path):
     assert not os.path.exists(exclude) or "settings.local.json" not in open(exclude).read()
 
 
+def test_restore_takes_back_a_rule_whichever_write_of_apply_failed(repo, tmp_path, monkeypatch):
+    st = Store(str(tmp_path / "st"))
+    path = denylist.settings_path(repo)
+    write = Store.write
+
+    def record_fails(self, name, obj):
+        if name == denylist.APPLIED:
+            raise PermissionError(13, "the record is open in another process")
+        return write(self, name, obj)
+
+    def settings_fail(path, obj):
+        raise PermissionError(13, "the settings file is open in another process")
+    for target, name, failing in ((Store, "write", record_fails),
+                                  (denylist, "write_json", settings_fail)):
+        with monkeypatch.context() as m:
+            m.setattr(target, name, failing)
+            with pytest.raises(PermissionError):
+                denylist.apply(repo, ["Workflow"], st)
+        denylist.restore(repo, st)
+        assert not os.path.exists(path) or "Workflow" not in json.dumps(json.load(open(path)))
+        assert denylist.applied_for(st, repo) == []
+
+
 def test_a_settings_file_the_plugin_creates_is_kept_out_of_git(repo, tmp_path):
     st = Store(str(tmp_path / "st"))
     denylist.apply(repo, ["Workflow"], st)

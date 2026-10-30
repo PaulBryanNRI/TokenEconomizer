@@ -253,10 +253,12 @@ def _apply_json_list(repo_root, items, store, host):
     if not added:
         return []
     lst.extend(added)
+    # Recorded before written, as `restore` writes before it forgets: whichever write fails, the
+    # record still covers every entry of the plugin's in the file, so `restore` can take it back.
+    _record(store, set(applied(store, path)) | set(added), path)
     write_json(path, data)
     if created:
         _exclude_from_git(repo_root, _SETTINGS[host])
-    _record(store, set(applied(store, path)) | set(added), path)
     return added
 
 
