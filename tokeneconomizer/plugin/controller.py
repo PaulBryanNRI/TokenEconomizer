@@ -2,6 +2,8 @@
 
     SessionStart      inject the repository's micro-skills (cached by the last fold), and
                       fold any earlier session that ended without its SessionEnd being seen;
+                      the first time in a repository, learn from the sessions the agent kept
+                      from before (`history`);
                       with `repomap` on, refresh a stale map in the background
     UserPromptSubmit  open a prompt-turn for the loop guard; on a session's first prompt, add
                       the repository map (`repomap=on`)
@@ -24,7 +26,7 @@ import os
 import time
 
 from .. import loopguard
-from . import denylist, fold, repomap, repos, sidecall
+from . import denylist, fold, history, repomap, repos, sidecall
 from .hosts import merge_outputs
 from .paths import ensure_launcher
 
@@ -150,6 +152,15 @@ class LiveController:
                 f"again."))
             seen["sidecall_paused"] = pause["at"]
 
+        hist = self.store.read(history.STATE) or {}
+        if (hist.get("done") and hist.get("sessions") and not self.cfg.shadow
+                and seen.get("history") != hist["done"]):
+            outputs.append(self.host.notice(
+                f"TokenEconomizer learned from {hist['sessions']} earlier {self.host.name} "
+                f"session(s) of {self.ctx.repo.label} that the agent kept from before it was "
+                f"installed (review with `{self._cmd('status')}`)."))
+            seen["history"] = hist["done"]
+
         note = repos.migration_notice(self.ctx.root, self._cmd("repos"))
         if note and not self.cfg.shadow:
             outputs.append(self.host.notice(note))
@@ -169,6 +180,7 @@ class LiveController:
         repos.note_repo(self.ctx.root, self.ctx.repo)
         repos.prune_pins(self.ctx.root, self.host.name)
         repos.start_migration(self.ctx)
+        history.start(self.ctx)
         fold.spawn_fold(self.ctx, fold.pending_sessions(self.ctx, exclude=(self.sid,)))
         return merge_outputs(*outputs)
 

@@ -41,6 +41,8 @@ def summarize(records):
                    if r.get("kind") in ("session", "overhead"))
     return {
         "sessions": len(sessions),
+        # Sessions from before the plugin was installed, read from the agent's own history.
+        "history_sessions": sum(1 for r in sessions if r.get("source") == "history"),
         "priced_sessions": len(priced),
         "effective_tokens": exec_total,
         "overhead_tokens": oh_total,
