@@ -215,6 +215,10 @@ def _toolprune_show(ctx, unt):
         print(f"pending: written once this repository's sessions have been idle "
               f"{ctx.config.toolprune_quiet_minutes} minutes, so that no conversation you "
               f"resume re-reads its cached prompt (`toolprune apply` writes it now)")
+    held = [t for t in unt.get("history_held") or [] if t in _proposal(ctx, unt)]
+    if held and ctx.config.toolprune == "auto":
+        print(f"learned from sessions before the plugin was installed, so written only when "
+              f"you run `toolprune apply`: {', '.join(held)}")
     kept = denylist.kept_for(ctx.store, ctx.repo.root, host)
     if kept:
         print(f"kept, as you gave them back (`toolprune apply NAME` removes one again): "

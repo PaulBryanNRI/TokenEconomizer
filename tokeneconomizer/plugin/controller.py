@@ -214,9 +214,11 @@ class LiveController:
         prop = [t for t in unt.get("proposal") or [] if t not in mine and t not in kept]
         refused = unt.get("auto_apply_refused") if self.cfg.toolprune == "auto" else None
         # Under `auto`, a list waiting for the repository to go quiet is no news yet: the
-        # session start after it is written says so (above). Only a refusal is.
+        # session start after it is written says so (above). Only a refusal is, and what was
+        # learned from the agent's history, which waits for `apply` (`fold._auto_items`).
         if self.cfg.toolprune == "auto" and not refused:
-            prop = []
+            held = set(unt.get("history_held") or ())
+            prop = [t for t in prop if t in held]
         if prop and seen.get("untool") != ",".join(prop):
             out.append(self.host.notice(
                 f"TokenEconomizer: {len(prop)} {unit}(s) went unused in this repository's recent "
