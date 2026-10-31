@@ -289,8 +289,16 @@ def _hold(doc, prior, proposal, root):
 
 def last_activity(ctx):
     """When a session of this repository on this agent last did anything: a hook call (its
-    record's write) or a line in its own session log, whichever is later; 0 when none did."""
+    record's write) or a line in its own session log, whichever is later; 0 when none did.
+    A session folded from the agent's history (`plugin.history`) has no record, only its log:
+    one resumed since would have a warm cache too."""
     latest = 0.0
+    for entry in (ctx.store.read("folded.json") or {}).values():
+        tp = entry.get("transcript") if isinstance(entry, dict) else None
+        try:
+            latest = max(latest, os.path.getmtime(tp)) if tp else latest
+        except OSError:
+            pass
     sess_dir = ctx.store.path("sessions")
     try:
         names = [n for n in os.listdir(sess_dir) if n.endswith(".json")]
@@ -355,8 +363,9 @@ def schedule_pending(ctx):
 CODEX_HIGH_RISK = frozenset({"image_media"})
 
 
-def fold_session(ctx, session_id, transcript_path=None):
-    """Fold one finished session. Returns the ledger record, or None if already folded."""
+def fold_session(ctx, session_id, transcript_path=None, source=None):
+    """Fold one finished session. Returns the ledger record, or None if already folded.
+    `source` labels a session the hooks never saw ("history": see `plugin.history`)."""
     sess_name = os.path.join("sessions", f"{session_id}.json")
     with ctx.store.locked("fold", timeout=FOLD_LOCK_WAIT_S) as got:
         if not got:
@@ -370,6 +379,8 @@ def fold_session(ctx, session_id, transcript_path=None):
                   "repo": ctx.repo.label, "folded_at": time.time(),
                   "started": sess.get("started"), "ended": sess.get("ended"),
                   "shadow": ctx.config.shadow}
+        if source:
+            record["source"] = source
         workdir = tempfile.mkdtemp(prefix="te-fold-")
         try:
             trace_path = ctx.host.mechanism_trace(transcript, workdir) if transcript else None

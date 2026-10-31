@@ -24,6 +24,8 @@
                                       now (runs by itself, once, after an upgrade)
     te repos merge KEY [INTO]         merge the state directory KEY into INTO (default: this
                                       repository's), for state whose checkouts are gone
+    te history                        learn from this repository's earlier sessions the agent
+                                      kept (runs by itself, once, at the first session start)
     te doctor                         check the installation
     te --host copilot probe           real Copilot sessions in a throwaway repository: does a
                                       learned fact change what the model does, and what does the
@@ -42,7 +44,8 @@ import sys
 import time
 
 from .. import loopguard
-from . import accounting, denylist, fold, hosts, paths, repomap, repos, sidecall, toolcheck
+from . import (accounting, denylist, fold, history, hosts, paths, repomap, repos, sidecall,
+               toolcheck)
 from .config import canonical, unset_config, write_config
 from .context import LiveContext
 from .paths import state_root
@@ -150,7 +153,9 @@ def cmd_status(args):
         print(f"  warning      {w}")
     if out["session_note"]:
         print(f"  note         {out['session_note']}")
-    print(f"  sessions     {ledger['sessions']} folded, "
+    hist = (f" ({ledger['history_sessions']} from before the plugin was installed)"
+            if ledger["history_sessions"] else "")
+    print(f"  sessions     {ledger['sessions']} folded{hist}, "
           f"{accounting.fmt_tokens(ledger['effective_tokens'])} effective tokens, plugin "
           f"overhead {accounting.fmt_tokens(ledger['overhead_tokens'])} "
           f"({ledger['overhead_frac']:.1%})")
@@ -513,6 +518,23 @@ def cmd_fold(args):
     return 0
 
 
+def cmd_history(args):
+    """Fold this repository's earlier sessions from the agent's own history (`plugin.history`).
+    `SessionStart` starts it detached, once; run by hand, it folds whatever is still unfolded."""
+    ctx = _ctx(args)
+    if not ctx.host.reads_history:
+        print(f"the plugin does not read {ctx.host.name}'s session history")
+        return 0
+    with ctx.store.locked("history", timeout=0) as got:
+        if got:
+            prior = ctx.store.read(history.STATE) or {}
+            ctx.store.write(history.STATE, dict(prior, started=time.time()))
+    done = history.run(ctx)
+    print(f"{ctx.repo.label}: folded {done['sessions']} earlier session(s) of "
+          f"{done['found']} found, {done['turns']} prompt-turn(s) replayed for the loop guard")
+    return 0
+
+
 def cmd_judge(args):
     """The detached half of the stuck judge (see plugin/judge.py); not for people."""
     from . import judge
@@ -740,6 +762,7 @@ def build_parser():
     p.add_argument("--session", required=True)
     p.add_argument("--job", required=True)
     p.set_defaults(fn=cmd_judge)
+    add("history").set_defaults(fn=cmd_history)
     add("doctor").set_defaults(fn=cmd_doctor)
     p = add("repos")
     p.add_argument("action", nargs="?", default="list", choices=("list", "migrate", "merge"))

@@ -167,3 +167,75 @@ def claude_deferred_tools(transcript_path):
         names.update(n for n in (att.get("addedNames") or []) if isinstance(n, str))
         names.difference_update(n for n in (att.get("removedNames") or []) if isinstance(n, str))
     return names
+
+
+# ---- the history Claude Code keeps ---------------------------------------------------------
+def claude_home(env=None):
+    """Claude Code's own directory: `CLAUDE_CONFIG_DIR`, else `~/.claude`."""
+    env = os.environ if env is None else env
+    if env.get("CLAUDE_CONFIG_DIR"):
+        return env["CLAUDE_CONFIG_DIR"]
+    home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
+    return os.path.join(home, ".claude")
+
+
+def claude_history_logs(env=None):
+    """{project directory: [session logs]} for every session Claude Code has kept: one directory
+    per directory a session started in (`<home>/projects/<encoded cwd>/`), one
+    `<session-id>.jsonl` per session in it. A subagent's log is part of its session's, under
+    `<session-id>/subagents/` (or `agent-*.jsonl` beside it, in older versions), so it is left
+    out."""
+    out = {}
+    for proj in sorted(glob.glob(os.path.join(claude_home(env), "projects", "*"))):
+        if not os.path.isdir(proj):
+            continue
+        logs = [p for p in sorted(glob.glob(os.path.join(proj, "*.jsonl")))
+                if not os.path.basename(p).startswith("agent-")]
+        if logs:
+            out[proj] = logs
+    return out
+
+
+def claude_prompt_turns(transcript_path):
+    """[(calls, interrupted)] per prompt the person gave (`_is_prompt`), in order: the main
+    conversation's tool calls in that turn, as `(name, args, result_text, ok)`, and whether the
+    person interrupted it. A subagent's calls are not the turn's own, as the loop guard's hooks
+    never see them either."""
+    turns, by_id = [], {}
+    for line in _lines(transcript_path):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") not in CONVERSATION \
+                or ev.get("isSidechain"):
+            continue
+        if _is_prompt(ev):
+            turns.append(([], False))
+            continue
+        if not turns:
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        if not isinstance(content, list):
+            continue
+        calls = turns[-1][0]
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use" and b.get("id") not in by_id:
+                call = [b.get("name") or "", b.get("input") or {}, "", True]
+                by_id[b.get("id")] = call
+                calls.append(call)
+            elif b.get("type") == "tool_result" and b.get("tool_use_id") in by_id:
+                c = b.get("content")
+                if isinstance(c, list):
+                    c = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+                call = by_id[b["tool_use_id"]]
+                call[2] = c if isinstance(c, str) else ""
+                call[3] = not b.get("is_error", False)
+            elif (ev.get("type") == "user" and b.get("type") == "text"
+                  and str(b.get("text") or "").startswith("[Request interrupted")):
+                turns[-1] = (calls, True)
+    return [([tuple(c) for c in calls], interrupted) for calls, interrupted in turns]

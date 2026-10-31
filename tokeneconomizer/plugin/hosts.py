@@ -114,6 +114,8 @@ class Host:
     end_run = "Press Ctrl+C to end the run."
     # Whether context returned from UserPromptSubmit reaches the model (verified per host).
     prompt_context = False
+    # Whether the plugin reads the sessions this agent kept before it (`history_logs`).
+    reads_history = False
 
     def session_id(self, p):
         return str(p.get("session_id") or "")
@@ -190,6 +192,16 @@ class Host:
     def tool_usage(self, trace_path):
         return trace.tool_usage(trace_path)
 
+    def history_logs(self, env):
+        """{directory: [session logs]} for the sessions this agent kept before the plugin saw
+        them (`plugin.history`); empty where the plugin does not read an agent's history."""
+        return {}
+
+    def prompt_turns(self, transcript_path):
+        """[(calls, interrupted)] per prompt of a finished session (see
+        `trace.claude_prompt_turns`); empty where the log is not read that way."""
+        return []
+
 
 def _failure_response(p):
     """A PostToolUseFailure payload's `error` as a response; None for any other payload. A
@@ -232,6 +244,7 @@ class ClaudeCode(Host):
     # `claude -p` prints it not at all; Claude's own reply is in the main view and in the output.
     relays_notices = True
     prompt_context = True
+    reads_history = True
 
     def turn_key(self, p):
         return str(p.get("prompt_id") or "")
@@ -257,6 +270,12 @@ class ClaudeCode(Host):
 
     def tool_usage(self, trace_path):
         return trace.claude_tool_usage(os.path.realpath(trace_path))
+
+    def history_logs(self, env):
+        return trace.claude_history_logs(env)
+
+    def prompt_turns(self, transcript_path):
+        return trace.claude_prompt_turns(transcript_path)
 
 
 _CODEX_SHELL = {"bash", "shell", "exec_command", "local_shell", "unified_exec",

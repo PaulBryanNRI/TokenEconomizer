@@ -23,6 +23,10 @@ The defaults:
                                 turn on Claude Code and Pi, is still read, and acts as "nudge"
                                 with a warning. Every model call the plugin makes is charged to
                                 the session's ledger;
+  * history     = True       -- the first time the plugin runs in a repository, it also learns
+                                from that repository's earlier sessions the agent kept (Claude
+                                Code's `~/.claude/projects`; see plugin/history.py), then goes on
+                                learning from the sessions it sees;
   * shadow      = False      -- with True, every decision is computed and logged but none
                                 reaches the agent: the way to measure a mechanism before
                                 trusting it.
@@ -161,6 +165,7 @@ class LiveConfig:
     repomap_python: str = ""
     repomap_timeout: int = 8
     paid_model: str = ""
+    history: bool = True
     shadow: bool = False
     vocabulary: str = "auto"
     warnings: list = field(default_factory=list)
@@ -251,7 +256,7 @@ class LiveConfig:
 
 
 # Environment variables, old names first so that a new name set alongside its old one wins.
-_ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow",
+_ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow", "TE_HISTORY": "history",
         "TE_PAID_MODEL": "paid_model", "TE_VOCABULARY": "vocabulary",
         "TE_INJECT": "microskills", "TE_INJECT_MAX_FACTS": "microskills_max_facts",
         "TE_INJECT_MAX_TOKENS": "microskills_max_tokens",

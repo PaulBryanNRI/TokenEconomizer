@@ -20,6 +20,7 @@ What happens at each hook, and how each agent was verified to behave, is in
 | `repos.py` | which repository's state a session belongs to over time: session pins, `te repos`, `repos migrate` and `merge` |
 | `adapter.py` | the `DomainAdapter` for a real repository |
 | `accounting.py` | the session ledger |
+| `history.py` | learning from the sessions the agent kept from before the plugin (`te history`) |
 | `sidecall.py`, `judge.py` | the plugin's model calls (the loop guard's judge, micro-skills' proposer) through the agent's own CLI, off the hook's critical path |
 | `repomap.py`, `repomap_gen.py` | the opt-in repository map |
 | `probe.py` | `te --host copilot probe`: the plugin end to end in real Copilot sessions |

@@ -13,7 +13,7 @@ the hooks run) and `plugin/` (the packaging for each agent). To install and use 
 
 | Hook | What the plugin does | Mechanism it drives |
 |---|---|---|
-| `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen | microskills |
+| `SessionStart` | Injects the repository's micro-skills (a cached render) as `additionalContext`, at a new start, and on a Copilot resume the text that session started with (§3); announces changed facts, tools the deny list newly left out, or, under `toolprune=propose` (or when `auto` could not write the file), a proposal still waiting, each in one `systemMessage` line; folds any earlier session whose end was never seen; the first time in a repository, on Claude Code, starts a detached `te history` that learns from that repository's earlier sessions (below), and once it has, says so in one line | microskills, toolprune, loopguard |
 | `UserPromptSubmit` | Opens a prompt-turn for the loop guard | loopguard |
 | `PostToolUse` | Folds the call into the turn's guard; delivers a redirect as `additionalContext`, then, if the turn is still stuck, a one-line notice to the person (on Claude Code, also as context asking the model to repeat it); never stops the turn | loopguard |
 | `PostToolUseFailure` | The same, for a call that failed (Claude Code and Copilot report a failed call only here); the answer names this event, as Claude Code requires | loopguard |
@@ -43,6 +43,8 @@ re-tuned. Three things it adds:
 * The **stuck judge and nudge writer run in a detached `te judge` job**, not in
   the hook. The hook starts the job and returns; a later PostToolUse picks up the verdict, with
   the redirect already written. Each job's spend is charged to the ledger when it is spent.
+
+**Sessions from before the plugin.** The hooks see only the sessions that run after installation, but Claude Code keeps every session's log under `~/.claude/projects/` (`CLAUDE_CONFIG_DIR`, when set). The first time the plugin runs in a repository, `te history` (`plugin/history.py`) folds the most recent 100 of that repository's earlier sessions, oldest first, before learning on from the sessions it sees: micro-skills and tool pruning learn from each through the same fold (its ledger record says `source: "history"`), and the loop guard's envelope from each prompt-turn that ran to its end, replayed through the same `TurnGuard` its hooks drive. A session belongs to the repository of the directory it started in; sessions the hooks already recorded, ones already folded, and logs written in the last ten minutes are skipped; `history.json` records that it ran. `history=off` turns it off, and `te history` runs it again by hand (it folds only what is still unfolded). With micro-skills `on`, the proposer runs on these folds at its usual cadence, so a long history makes model calls at installation. Only Claude Code's history is read so far.
 
 Every hook fails open: any error becomes an empty output (no change) and a traceback in
 `~/.tokeneconomizer/errors.log`. The hooks are stdlib only, and none waits on a model call.
@@ -507,7 +509,7 @@ authored again under a new id; the experiments' prompt names the ids alone, as t
 All state is local, under `$TOKENECONOMIZER_HOME` (default `~/.tokeneconomizer`), one directory
 per repository and host: the mechanisms' own state, `ledger.jsonl` (one priced record per
 session), `events.jsonl` (every injection, redirect and still-stuck notice), and per-session guard state.
-Uninstalling the plugin leaves this directory; delete it to forget. `te repos` lists what it
+The first session in a repository also reads that repository's earlier Claude Code session logs, on the machine, to learn from them (§1; `history=off` to skip it). Uninstalling the plugin leaves this directory; delete it to forget. `te repos` lists what it
 holds.
 
 Which repository a session belongs to (`plugin/paths.py`, `plugin/repos.py`):
