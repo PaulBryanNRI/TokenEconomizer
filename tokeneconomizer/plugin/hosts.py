@@ -202,6 +202,10 @@ class Host:
         `trace.claude_prompt_turns`); empty where the log is not read that way."""
         return []
 
+    def first_prompt(self, transcript_path):
+        """(ISO timestamp, text) of a session's first prompt; ("", "") where not read."""
+        return "", ""
+
 
 def _failure_response(p):
     """A PostToolUseFailure payload's `error` as a response; None for any other payload. A
@@ -276,6 +280,9 @@ class ClaudeCode(Host):
 
     def prompt_turns(self, transcript_path):
         return trace.claude_prompt_turns(transcript_path)
+
+    def first_prompt(self, transcript_path):
+        return trace.claude_first_prompt(transcript_path)
 
 
 _CODEX_SHELL = {"bash", "shell", "exec_command", "local_shell", "unified_exec",

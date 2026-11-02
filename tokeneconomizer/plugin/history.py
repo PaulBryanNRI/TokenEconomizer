@@ -18,8 +18,8 @@ under that directory's name, and the log records it (`cwd`) -- identified as the
 identifies any session's repository (`paths.repo_identity`). Skipped: a session the
 hooks have a record of (the fold handles it), one already folded, and one whose log was written
 in the last `fold.STALE_S` seconds (it may still be running). It all runs in a detached `te
-history`, started once per repository and agent by `SessionStart` (`start`); `history.json`
-records that it ran. `history=off` turns it off.
+history run`, started once per repository and agent by `SessionStart` (`start`); `history.json`
+records that it ran, and `te history` shows what was imported. `history=off` turns it off.
 """
 import os
 import time
@@ -48,7 +48,7 @@ def due(ctx, now=None):
 
 
 def start(ctx, now=None):
-    """Read the repository's history in a detached `te history` (inline when TE_FOLD_SYNC=1),
+    """Read the repository's history in a detached `te history run` (inline when TE_FOLD_SYNC=1),
     if it is due. Returns whether it started."""
     if not due(ctx, now):
         return False
@@ -60,16 +60,25 @@ def start(ctx, now=None):
     if ctx.env.get("TE_FOLD_SYNC") == "1":
         run(ctx)
     else:
-        ctx.spawn(["history"], "fold.log")
+        ctx.spawn(["history", "run"], "fold.log")
     return True
 
 
-def candidates(ctx, now=None):
-    """[(session id, log)] of this repository's earlier sessions to fold, oldest first."""
+# Where each of this repository's kept sessions stands (`survey`).
+IMPORTED, SEEN, RUNNING, WAITING = "imported", "seen", "running", "waiting"
+
+
+def survey(ctx, now=None):
+    """[{session_id, log, mtime, status}] for every session of this repository the agent kept,
+    oldest first. `status` is IMPORTED (folded from history), SEEN (the plugin's hooks saw it,
+    so it is learned from at its end), RUNNING (its log was written in the last `fold.STALE_S`
+    seconds) or WAITING (the next run imports it)."""
     now = now or time.time()
     folded = ctx.store.read("folded.json") or {}
+    imported = {r.get("session_id") for r in ctx.store.read_lines("ledger.jsonl")
+                if r.get("source") == "history"}
     sess_dir = ctx.store.path("sessions")
-    found = []
+    out = []
     for logs in ctx.host.history_logs(ctx.env).values():
         # One directory holds the sessions started in one directory (it is named for it), so
         # the first log that names its directory says which repository they all belong to.
@@ -78,15 +87,25 @@ def candidates(ctx, now=None):
             continue
         for log in logs:
             sid = os.path.splitext(os.path.basename(log))[0]
-            if sid in folded or os.path.exists(os.path.join(sess_dir, f"{sid}.json")):
-                continue
             try:
                 mtime = os.path.getmtime(log)
             except OSError:
                 continue
-            if now - mtime >= fold.STALE_S:
-                found.append((mtime, sid, log))
-    return [(sid, log) for _, sid, log in sorted(found)]
+            if sid in imported:
+                status = IMPORTED
+            elif sid in folded or os.path.exists(os.path.join(sess_dir, f"{sid}.json")):
+                status = SEEN
+            elif now - mtime < fold.STALE_S:
+                status = RUNNING
+            else:
+                status = WAITING
+            out.append({"session_id": sid, "log": log, "mtime": mtime, "status": status})
+    return sorted(out, key=lambda e: e["mtime"])
+
+
+def candidates(ctx, now=None):
+    """[(session id, log)] of this repository's earlier sessions to fold, oldest first."""
+    return [(e["session_id"], e["log"]) for e in survey(ctx, now) if e["status"] == WAITING]
 
 
 def _repo_key(cwd, env):
