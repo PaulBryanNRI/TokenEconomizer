@@ -25,10 +25,10 @@ def claude_home(env, tmp_path):
     return home
 
 
-def kept(home, cwd, sid, make, age_s=3600):
-    """A session log as Claude Code keeps it: under the directory it started in, every entry
-    naming that directory, last written `age_s` ago."""
-    proj = home / "projects" / "".join(c if c.isalnum() else "-" for c in str(cwd))
+def kept(home, cwd, sid, make, age_s=3600, folder=None):
+    """A session log as Claude Code keeps it: under the directory it started in (or `folder`),
+    every entry naming that directory, last written `age_s` ago."""
+    proj = home / "projects" / "".join(c if c.isalnum() else "-" for c in str(folder or cwd))
     proj.mkdir(parents=True, exist_ok=True)
     path = str(proj / f"{sid}.jsonl")
     make(path)
@@ -245,3 +245,47 @@ def test_a_first_prompt_reads_as_the_person_typed_it(tmp_path):
         fh.write(json.dumps({"type": "user", "message": {
             "content": 'fix this <pasted_content id="a">PS C:\> boom</pasted_content> now'}}) + "\n")
     assert trace.claude_first_prompt(path) == ("", "fix this [pasted] now")
+
+
+def test_each_session_is_placed_by_its_own_log_not_by_its_folder(env, repo, tmp_path,
+                                                                 claude_home):
+    """Seen on Claude Code: the folder named for one repository also held sessions that started
+    in two others, listed first. The repository's own sessions there are still its own."""
+    other = tmp_path / "other"
+    (other / ".git").mkdir(parents=True)
+    (other / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    kept(claude_home, other, "a-elsewhere", lambda p: trap_session(p, str(other), 0), folder=repo)
+    kept(claude_home, repo, "b-mine", lambda p: trap_session(p, repo, 1))
+    kept(claude_home, repo, "c-filed-elsewhere", lambda p: trap_session(p, repo, 2),
+         folder=other)
+    start(env, repo, "new", tmp_path)
+    assert sorted(store_for(env, repo).read("folded.json")) == ["b-mine", "c-filed-elsewhere"]
+
+
+def test_a_session_kept_in_two_folders_is_one_session_read_from_its_fullest_copy(
+        env, repo, tmp_path, claude_home, monkeypatch, capsys):
+    """Seen on Claude Code: a session resumed from another directory has a second copy of its
+    log in that directory's folder, with more in it."""
+    from tokeneconomizer.plugin import cli
+    kept(claude_home, repo, "twice", lambda p: trap_session(p, repo, 0))
+    fuller = kept(claude_home, repo, "twice", lambda p: write_session(p, [
+        (f"prompt {k}", [("Bash", {"command": "ls"}, "a", False)]) for k in range(5)]),
+        folder=tmp_path / "elsewhere")
+    start(env, repo, "new", tmp_path)
+    st = store_for(env, repo)
+    assert [r["prompts"] for r in st.read_lines("ledger.jsonl")] == [5]
+    assert st.read("folded.json")["twice"]["transcript"] == fuller
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--host", "claude", "--cwd", repo, "history"]) == 0
+    assert capsys.readouterr().out.count("twice") == 1
+
+
+def test_a_history_read_the_earlier_way_is_read_again_once(env, repo, tmp_path, claude_home):
+    kept(claude_home, repo, "old", lambda p: trap_session(p, repo, 0))
+    ctx = LiveContext.build(hosts.ClaudeCode(), repo, env)
+    ctx.store.write(history.STATE, {"started": 1.0, "done": 2.0, "sessions": 0})   # version 1
+    assert history.start(ctx)
+    assert ctx.store.read(history.STATE)["version"] == history.VERSION
+    assert ctx.store.read(history.STATE)["sessions"] == 1
+    assert not history.start(ctx)

@@ -13,9 +13,9 @@ the sessions it sees:
     `TurnGuard` the `PostToolUse` and `Stop` hooks drive (`replay_turns`), since the hooks that
     feed it live never ran for them.
 
-A session belongs to the repository of the directory it started in -- Claude Code files its log
-under that directory's name, and the log records it (`cwd`) -- identified as the plugin
-identifies any session's repository (`paths.repo_identity`). Skipped: a session the
+A session belongs to the repository of the first directory its log names (`cwd`), identified as
+the plugin identifies any session's repository (`paths.repo_identity`); not that of the folder
+Claude Code filed it in, which can hold other repositories' sessions too. Skipped: a session the
 hooks have a record of (the fold handles it), one already folded, and one whose log was written
 in the last `fold.STALE_S` seconds (it may still be running). It all runs in a detached `te
 history run`, started once per repository and agent by `SessionStart` (`start`); `history.json`
@@ -31,6 +31,9 @@ from .paths import repo_identity
 from .repos import _transcript_cwd
 
 STATE = "history.json"
+# How the history is read. A run under an earlier way is run again (it folds only what it has
+# not): version 1 placed a whole folder by its first log, and missed sessions (see `survey`).
+VERSION = 2
 RETRY_S = 3600          # a run that started this long ago and never finished is started again
 
 
@@ -43,6 +46,8 @@ def due(ctx, now=None):
         return False
     st = ctx.store.read(STATE)
     if not isinstance(st, dict):
+        return True
+    if st.get("done") and int(st.get("version") or 1) < VERSION:
         return True
     return not st.get("done") and (now or time.time()) - float(st.get("started") or 0) > RETRY_S
 
@@ -78,14 +83,19 @@ def survey(ctx, now=None):
     imported = {r.get("session_id") for r in ctx.store.read_lines("ledger.jsonl")
                 if r.get("source") == "history"}
     sess_dir = ctx.store.path("sessions")
-    out = []
+    out = {}
+    keys = {}
     for logs in ctx.host.history_logs(ctx.env).values():
-        # One directory holds the sessions started in one directory (it is named for it), so
-        # the first log that names its directory says which repository they all belong to.
-        cwd = next((c for c in map(_transcript_cwd, logs) if c), None)
-        if not cwd or _repo_key(cwd, ctx.env) != ctx.repo.key:
-            continue
         for log in logs:
+            # Each log by the directory it names first: one folder can hold sessions that
+            # started elsewhere (seen on Claude Code: a folder named for one repository holding
+            # sessions of two others), so a folder's name, or its first log, says nothing for
+            # the rest of it.
+            cwd = _transcript_cwd(log)
+            if cwd and cwd not in keys:
+                keys[cwd] = _repo_key(cwd, ctx.env)
+            if not cwd or keys[cwd] != ctx.repo.key:
+                continue
             sid = os.path.splitext(os.path.basename(log))[0]
             try:
                 mtime = os.path.getmtime(log)
@@ -99,8 +109,17 @@ def survey(ctx, now=None):
                 status = RUNNING
             else:
                 status = WAITING
-            out.append({"session_id": sid, "log": log, "mtime": mtime, "status": status})
-    return sorted(out, key=lambda e: e["mtime"])
+            try:
+                size = os.path.getsize(log)
+            except OSError:
+                continue
+            # One session can have a log in two folders (Claude Code copies it when it is
+            # resumed from another directory): it is one session, read from its fullest copy.
+            prior = out.get(sid)
+            if prior is None or (size, mtime) > (prior["size"], prior["mtime"]):
+                out[sid] = {"session_id": sid, "log": log, "mtime": mtime, "size": size,
+                            "status": status}
+    return sorted(out.values(), key=lambda e: e["mtime"])
 
 
 def candidates(ctx, now=None):
@@ -163,7 +182,7 @@ def run(ctx, now=None):
     summary = {"sessions": sessions, "turns": turns, "found": len(found)}
     with ctx.store.locked("history", timeout=10.0):
         prior = ctx.store.read(STATE) or {}
-        ctx.store.write(STATE, dict(prior, done=time.time(),
+        ctx.store.write(STATE, dict(prior, done=time.time(), version=VERSION,
                                     sessions=int(prior.get("sessions") or 0) + sessions,
                                     turns=int(prior.get("turns") or 0) + turns))
     return summary
