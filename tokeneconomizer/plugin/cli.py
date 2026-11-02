@@ -24,8 +24,9 @@
                                       now (runs by itself, once, after an upgrade)
     te repos merge KEY [INTO]         merge the state directory KEY into INTO (default: this
                                       repository's), for state whose checkouts are gone
-    te history                        learn from this repository's earlier sessions the agent
-                                      kept (runs by itself, once, at the first session start)
+    te history [show | run]           what this repository's earlier sessions, from the agent's
+                                      own history, gave the plugin; `run` imports them (it runs
+                                      by itself, once, at the first session start)
     te doctor                         check the installation
     te --host copilot probe           real Copilot sessions in a throwaway repository: does a
                                       learned fact change what the model does, and what does the
@@ -522,13 +523,93 @@ def cmd_fold(args):
     return 0
 
 
+def _started_at(iso, mtime):
+    """A session's start as a person reads it, in local time: its first prompt's timestamp, else
+    when its log was last written."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime(
+            "%Y-%m-%d %H:%M")
+    except (ValueError, AttributeError):
+        return _when(mtime)
+
+
+_NOT_IMPORTED = {
+    history.SEEN: "seen by the plugin itself: learned from when it ended",
+    history.RUNNING: "still being written: imported once it has been quiet for 10 minutes",
+    history.WAITING: "not imported yet: at the next session start, or now with `te history run`",
+}
+
+
+def _history_show(ctx, args):
+    st = ctx.store.read(history.STATE) or {}
+    entries = history.survey(ctx)
+    ledger = {r.get("session_id"): r for r in ctx.store.read_lines("ledger.jsonl")
+              if r.get("source") == "history"}
+    rows = []
+    for e in entries:
+        iso, prompt = ctx.host.first_prompt(e["log"])
+        rec = ledger.get(e["session_id"]) or {}
+        rows.append(dict(e, started=_started_at(iso, e["mtime"]), first_prompt=prompt,
+                         prompts=rec.get("prompts"), effective_tokens=rec.get("effective_tokens")))
+    rows.sort(key=lambda r: r["started"])
+    imported = [r for r in rows if r["status"] == history.IMPORTED]
+    others = [r for r in rows if r["status"] != history.IMPORTED]
+    inj = ctx.store.read("injection.json") or {}
+    unt = ctx.store.read("untool.json") or {}
+    held = [t for t in unt.get("history_held") or [] if t in _proposal(ctx, unt)]
+    facts = sum(1 for ln in (inj.get("rendered") or "").splitlines() if ln.startswith("- "))
+    if args.json:
+        print(json.dumps({"repo": ctx.repo.label, "state": st, "sessions": rows,
+                          "facts_injected": facts, "deny_list_waiting": held}, indent=2,
+                         default=str))
+        return 0
+    print(f"TokenEconomizer history -- {ctx.repo.label} ({ctx.host.name})")
+    if st.get("done"):
+        print(f"  read         {_when(st['done'])}: {len(imported)} earlier session(s) imported, "
+              f"{st.get('turns', 0)} prompt-turn(s) given to the loop guard")
+    elif st.get("started"):
+        print(f"  read         started {_when(st['started'])}, not finished yet")
+    else:
+        print("  read         not yet (at the next session start, or now with `te history run`)")
+    if not ctx.config.history:
+        print("  setting      history=off: earlier sessions are not imported")
+    print(f"  learned      {facts} fact(s) added to new sessions (from these and later sessions; "
+          f"`te microskills`)")
+    print(f"  deny list    " + (f"{len(held)} unused tool(s) waiting for `te toolprune apply` "
+                                f"({', '.join(held[:3])}{', ...' if len(held) > 3 else ''}; "
+                                f"all of them in `te toolprune`)" if held else
+                                "nothing from these sessions is waiting for you"))
+
+    def line(r):
+        cost = (f"{r['prompts']} prompt(s), "
+                f"{accounting.fmt_tokens(r['effective_tokens'])} tokens  "
+                if r["prompts"] is not None else "")
+        text = r["first_prompt"] or "(no prompt)"
+        text = text if len(text) <= 60 else text[:57] + "..."
+        return f"  {r['started']}  {r['session_id'][:8]}  {cost}{text}"
+    print(f"\nimported ({len(imported)}, oldest first)")
+    for r in imported:
+        print(line(r))
+    if not imported:
+        print("  none")
+    if others:
+        print(f"\nnot imported ({len(others)})")
+        for r in others:
+            print(line(r) + f"\n      {_NOT_IMPORTED[r['status']]}")
+    return 0
+
+
 def cmd_history(args):
-    """Fold this repository's earlier sessions from the agent's own history (`plugin.history`).
-    `SessionStart` starts it detached, once; run by hand, it folds whatever is still unfolded."""
+    """`te history [show]`: what this repository's earlier sessions, from the agent's own history
+    (`plugin.history`), gave the plugin. `te history run` imports them: `SessionStart` starts it
+    detached, once; run by hand, it imports whatever is still waiting."""
     ctx = _ctx(args)
     if not ctx.host.reads_history:
         print(f"the plugin does not read {ctx.host.name}'s session history")
         return 0
+    if args.action == "show":
+        return _history_show(ctx, args)
     with ctx.store.locked("history", timeout=0) as got:
         if got:
             prior = ctx.store.read(history.STATE) or {}
@@ -766,7 +847,10 @@ def build_parser():
     p.add_argument("--session", required=True)
     p.add_argument("--job", required=True)
     p.set_defaults(fn=cmd_judge)
-    add("history").set_defaults(fn=cmd_history)
+    p = add("history")
+    p.add_argument("action", nargs="?", default="show", choices=("show", "run"))
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_history)
     add("doctor").set_defaults(fn=cmd_doctor)
     p = add("repos")
     p.add_argument("action", nargs="?", default="list", choices=("list", "migrate", "merge"))

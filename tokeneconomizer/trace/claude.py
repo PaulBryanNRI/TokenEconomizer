@@ -13,6 +13,7 @@ and results included; read as calls, every call counted twice.
 import glob
 import json
 import os
+import re
 
 from .jsonl import lines as _lines
 
@@ -239,3 +240,40 @@ def claude_prompt_turns(transcript_path):
                   and str(b.get("text") or "").startswith("[Request interrupted")):
                 turns[-1] = (calls, True)
     return [([tuple(c) for c in calls], interrupted) for calls, interrupted in turns]
+
+
+def claude_first_prompt(transcript_path):
+    """(timestamp, text) of the first prompt the person gave a session (`_is_prompt`): the ISO
+    time Claude Code wrote with it and its text; ("", "") when there is none."""
+    for line in _lines(transcript_path):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or not _is_prompt(ev):
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = " ".join(b.get("text") or "" for b in content
+                               if isinstance(b, dict) and b.get("type") == "text")
+        return str(ev.get("timestamp") or ""), _prompt_text(str(content or ""))
+    return "", ""
+
+
+_COMMAND_RE = re.compile(r"<command-name>\s*(.*?)\s*</command-name>", re.S)
+_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+_PASTED_RE = re.compile(r"<pasted_content\b.*?(?:</pasted_content>|$)", re.S)
+_TAG_RE = re.compile(r"<[^<>]{1,80}>")
+
+
+def _prompt_text(text):
+    """A prompt as the person typed it: a slash command as `/name args` (Claude Code writes it
+    as tags), pasted text as `[pasted]`, other markup dropped, whitespace folded."""
+    m = _COMMAND_RE.search(text)
+    if m:
+        name = m.group(1)
+        args = _ARGS_RE.search(text)
+        text = (name if name.startswith("/") else "/" + name) + (
+            " " + args.group(1) if args else "")
+    text = _TAG_RE.sub(" ", _PASTED_RE.sub(" [pasted] ", text))
+    return " ".join(text.split())

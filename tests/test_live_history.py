@@ -138,9 +138,9 @@ def test_te_history_folds_what_is_still_unfolded(env, repo, tmp_path, claude_hom
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     kept(claude_home, repo, "old", lambda p: trap_session(p, repo, 0))
-    assert cli.main(["--host", "claude", "--cwd", repo, "history"]) == 0
+    assert cli.main(["--host", "claude", "--cwd", repo, "history", "run"]) == 0
     assert "folded 1 earlier session(s)" in capsys.readouterr().out
-    assert cli.main(["--host", "claude", "--cwd", repo, "history"]) == 0
+    assert cli.main(["--host", "claude", "--cwd", repo, "history", "run"]) == 0
     assert "folded 0 earlier session(s) of 0 found" in capsys.readouterr().out
 
 
@@ -206,3 +206,42 @@ def test_a_deny_list_the_plugins_own_sessions_complete_is_written_by_itself(
         run_session(env, repo, f"s{i}", write_session(str(tmp_path / f"s{i}.jsonl"), [
             ("p", [("Bash", {"command": "ls"}, "a", False)])]))
     assert _deny(repo) == ["CronCreate"]
+
+
+def test_te_history_shows_what_was_imported_and_what_was_not(env, repo, tmp_path, claude_home,
+                                                            monkeypatch, capsys):
+    from tokeneconomizer.plugin import cli
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    kept(claude_home, repo, "aaaaaaaa-old", lambda p: write_session(
+        p, [("fix the flaky login test", [("Bash", {"command": "ls"}, "a", False)])]))
+    kept(claude_home, repo, "bbbbbbbb-now", lambda p: trap_session(p, repo, 1), age_s=5)
+    assert cli.main(["--host", "claude", "--cwd", repo, "history"]) == 0
+    out = capsys.readouterr().out
+    assert "read         not yet" in out and "imported (0" in out
+
+    start(env, repo, "new", tmp_path)
+    assert cli.main(["--host", "claude", "--cwd", repo, "history"]) == 0
+    out = capsys.readouterr().out
+    imported, rest = out.split("not imported (1)")
+    assert "1 earlier session(s) imported" in imported
+    assert "aaaaaaaa  1 prompt(s)" in imported and "fix the flaky login test" in imported
+    assert "bbbbbbbb" in rest and "still being written" in rest
+
+    assert cli.main(["--host", "claude", "--cwd", repo, "history", "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [s["status"] for s in doc["sessions"]] == ["imported", "running"]
+
+
+def test_a_first_prompt_reads_as_the_person_typed_it(tmp_path):
+    path = str(tmp_path / "t.jsonl")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "timestamp": "2026-10-20T03:20:00Z", "message": {
+            "content": "<command-message>daily-standup</command-message>\n<command-name>"
+                       "/daily-standup</command-name>\n<command-args>only git</command-args>"}})
+                 + "\n")
+    assert trace.claude_first_prompt(path) == ("2026-10-20T03:20:00Z", "/daily-standup only git")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "message": {
+            "content": 'fix this <pasted_content id="a">PS C:\> boom</pasted_content> now'}}) + "\n")
+    assert trace.claude_first_prompt(path) == ("", "fix this [pasted] now")
