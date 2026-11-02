@@ -166,3 +166,43 @@ def test_a_deny_list_learned_from_history_waits_for_its_sessions_to_go_quiet(
     ctx = LiveContext.build(hosts.ClaudeCode(), repo, env)
     history.run(ctx)
     assert abs(fold.last_activity(ctx) - os.path.getmtime(log)) < 1
+
+
+def test_a_deny_list_learned_from_history_waits_for_apply(env, repo, tmp_path, claude_home,
+                                                          monkeypatch, capsys):
+    """Under `auto`, what the history proposes is announced and written only on `apply`; the
+    plugin goes on writing what it learns from the sessions it sees by itself."""
+    from test_live_hooks import _catalog, _deny
+    from tokeneconomizer.plugin import cli
+    _catalog(env, ["Bash", "Read", "CronCreate", "Workflow"])
+    for i in range(5):
+        kept(claude_home, repo, f"old{i}", lambda p: write_session(
+            p, [("p", [("Bash", {"command": "ls"}, "a", False)])]))
+    start(env, repo, "new1", tmp_path)
+    assert _deny(repo) == []
+    second = start(env, repo, "new2", tmp_path)
+    assert "nothing changes until you run" in second["systemMessage"]
+    assert "CronCreate" in second["systemMessage"]
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--host", "claude", "--cwd", repo, "toolprune"]) == 0
+    assert "written only when you run `toolprune apply`" in capsys.readouterr().out
+    assert cli.main(["--host", "claude", "--cwd", repo, "toolprune", "apply"]) == 0
+    assert _deny(repo) == ["CronCreate", "Workflow"]
+
+
+
+def test_a_deny_list_the_plugins_own_sessions_complete_is_written_by_itself(
+        env, repo, tmp_path, claude_home):
+    """History too short to propose anything still counts: the sessions the plugin sees next
+    complete the evidence, and `auto` writes the list as it always has."""
+    from test_live_hooks import _catalog, _deny
+    _catalog(env, ["Bash", "Read", "CronCreate"])
+    for i in range(3):
+        kept(claude_home, repo, f"old{i}", lambda p: write_session(
+            p, [("p", [("Bash", {"command": "ls"}, "a", False)])]))
+    for i in range(2):
+        run_session(env, repo, f"s{i}", write_session(str(tmp_path / f"s{i}.jsonl"), [
+            ("p", [("Bash", {"command": "ls"}, "a", False)])]))
+    assert _deny(repo) == ["CronCreate"]

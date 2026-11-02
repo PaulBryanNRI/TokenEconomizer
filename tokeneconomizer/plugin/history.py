@@ -4,7 +4,7 @@ The hooks see only the sessions that run after the plugin is installed, so on it
 would start every repository from nothing. Claude Code keeps every session's log
 (`~/.claude/projects/<encoded cwd>/<session-id>.jsonl`), and those logs are what a fold reads
 anyway. So the first time the plugin runs in a repository, it folds that repository's earlier
-sessions too -- oldest first, the most recent `MAX_SESSIONS` of them -- before learning on from
+sessions too -- all of them, oldest first -- before learning on from
 the sessions it sees:
 
   * micro-skills and tool pruning learn from each one through the ordinary fold
@@ -31,7 +31,6 @@ from .paths import repo_identity
 from .repos import _transcript_cwd
 
 STATE = "history.json"
-MAX_SESSIONS = 100      # the most recent ones: a repository's long history costs a long fold
 RETRY_S = 3600          # a run that started this long ago and never finished is started again
 
 
@@ -87,8 +86,7 @@ def candidates(ctx, now=None):
                 continue
             if now - mtime >= fold.STALE_S:
                 found.append((mtime, sid, log))
-    found = sorted(found)[-MAX_SESSIONS:]
-    return [(sid, log) for _, sid, log in found]
+    return [(sid, log) for _, sid, log in sorted(found)]
 
 
 def _repo_key(cwd, env):

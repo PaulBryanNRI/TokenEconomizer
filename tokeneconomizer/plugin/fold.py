@@ -107,7 +107,7 @@ def enough_evidence(sessions, prompts, cfg, high_risk=False):
 
 
 def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=None,
-                    prompts=None):
+                    prompts=None, source=None):
     """Tool pruning's evidence: the sessions a tool went unused (`ToolingStage`'s streaks) and
     the prompts those sessions ran (`prompt_streaks`), weighed by `enough_evidence`. A list
     applies from a later session, since a running session keeps the tools it started with.
@@ -115,7 +115,8 @@ def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=
     if not denylist.supports(ctx.host.name) or ctx.config.toolprune == "off":
         return None
     if ctx.host.name == "codex":
-        return _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts)
+        return _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts,
+                                     source)
     host = ctx.host.name
     from tokeneconomizer.config import ToolingConfig
     from tokeneconomizer.toolprune import ToolingStage
@@ -184,8 +185,9 @@ def _fold_toolprune(ctx, adapter, run_dir, session_id, transcript=None, workdir=
         proposal = [t for t in raw if t not in applied and t not in kept]
     doc["proposal"] = proposal
     doc["new_in_proposal"] = sorted(set(proposal) - set(st.get("proposal", [])))
-    if ctx.config.toolprune == "auto" and proposal and not ctx.config.shadow:
-        _hold(doc, st, proposal, ctx.repo.root)
+    auto = _auto_items(doc, st, proposal, source)
+    if ctx.config.toolprune == "auto" and auto and not ctx.config.shadow:
+        _hold(doc, st, auto, ctx.repo.root)
     if restored:
         doc["restored_protected"] = restored
     ctx.store.write("untool.json", doc)
@@ -211,7 +213,8 @@ def _server_summary(stage, servers, prompt_streaks):
     return out
 
 
-def _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts=None):
+def _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts=None,
+                          source=None):
     """Codex: the experiments' capability controller (`codex_untool.CodexUntoolProfile`, driven
     through `ToolingStage`) decides which packages went unused, over a trace that carries the
     model's own `exec` calls (`trace.codex_capability_trace`). Two live adaptations:
@@ -270,11 +273,26 @@ def _fold_toolprune_codex(ctx, adapter, session_id, transcript, workdir, prompts
            "loaded_prompts": loaded_prompts,
            "proposal": proposal, "updated": time.time(),
            "new_in_proposal": sorted(set(proposal) - set(prior.get("proposal", [])))}
-    if ctx.config.toolprune == "auto" and proposal and not ctx.config.shadow:
-        _hold(doc, prior, proposal, ctx.repo.root)
+    auto = _auto_items(doc, prior, proposal, source)
+    if ctx.config.toolprune == "auto" and auto and not ctx.config.shadow:
+        _hold(doc, prior, auto, ctx.repo.root)
     ctx.store.write("untool.json", doc)
     return {"proposal": doc["proposal"], "pending": bool(doc.get("auto_pending")),
             "restored": []}
+
+
+def _auto_items(doc, prior, proposal, source):
+    """What of a proposal `auto` may write by itself. What a fold of the agent's history
+    (`plugin.history`) proposed waits for the person's `toolprune apply` instead: it was learned
+    from sessions run before the plugin was installed, and the person has not yet seen any list.
+    Such an item stays held (`history_held`) while it is proposed; one proposed later, from the
+    sessions the plugin saw, is written as usual."""
+    held = {t for t in prior.get("history_held") or () if t in proposal}
+    if source == "history":
+        held |= set(proposal)
+    if held:
+        doc["history_held"] = sorted(held)
+    return [t for t in proposal if t not in held]
 
 
 def _hold(doc, prior, proposal, root):
@@ -402,7 +420,7 @@ def fold_session(ctx, session_id, transcript_path=None, source=None):
                     # A session that ran no prompt is no evidence about the tools.
                     unt = None if prompts == 0 else _fold_toolprune(
                         ctx, adapter, run_dir, session_id, transcript=transcript,
-                        workdir=workdir, prompts=prompts)
+                        workdir=workdir, prompts=prompts, source=source)
                 record["injection"] = inj
                 record["untool"] = unt
                 if unt and unt.get("pending"):
